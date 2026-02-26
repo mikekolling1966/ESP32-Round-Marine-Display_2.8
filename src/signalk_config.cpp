@@ -35,7 +35,7 @@ static bool signalk_enabled = false;
 static unsigned long last_message_time = 0;
 static unsigned long last_reconnect_attempt = 0;
 static unsigned long next_reconnect_at = 0;
-static unsigned long current_backoff_ms = 2000; // start 2s
+static unsigned long current_backoff_ms = 10000; // start 10s
 static const unsigned long RECONNECT_BASE_MS = 2000;
 static const unsigned long RECONNECT_MAX_MS = 60000;
 static const unsigned long MESSAGE_TIMEOUT_MS = 30000; // 30s without messages => reconnect
@@ -226,15 +226,20 @@ static void signalk_task(void *parameter) {
                 next_reconnect_at = now + current_backoff_ms;
             }
             if (now >= next_reconnect_at) {
-                Serial.println("Signal K: attempting reconnect...");
-                // re-init client
-                ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream");
-                ws_client.onEvent(wsEvent);
-                last_reconnect_attempt = now;
-                // schedule next if this fails
-                unsigned int jitter = (esp_random() & 0x7FF) % 1000;
-                next_reconnect_at = now + current_backoff_ms + jitter;
-                current_backoff_ms = min(current_backoff_ms * 2, RECONNECT_MAX_MS);
+                if (WiFi.status() != WL_CONNECTED) {
+                    Serial.println("Signal K: WiFi not connected, skipping reconnect");
+                    next_reconnect_at = now + 5000;
+                } else {
+                    Serial.println("Signal K: attempting reconnect...");
+                    ws_client.disconnect();
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream");
+                    ws_client.onEvent(wsEvent);
+                    last_reconnect_attempt = now;
+                    unsigned int jitter = (esp_random() & 0x7FF) % 1000;
+                    next_reconnect_at = now + current_backoff_ms + jitter;
+                    current_backoff_ms = min(current_backoff_ms * 2, RECONNECT_MAX_MS);
+                }
             }
         }
 
