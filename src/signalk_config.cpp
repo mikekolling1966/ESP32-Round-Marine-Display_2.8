@@ -5,6 +5,7 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <esp_system.h>
+#include <HTTPClient.h>
 
 // Global array to hold all sensor values (10 parameters)
 float g_sensor_values[TOTAL_PARAMS] = {
@@ -48,6 +49,33 @@ static String outgoing_queue[OUTGOING_QUEUE_SIZE];
 static int queue_head = 0;
 static int queue_tail = 0;
 static int queue_count = 0;
+
+// SignalK auth token
+static String sk_token = "";
+static String sk_username = "pi";
+static String sk_password = "raspberry";
+
+static bool fetch_signalk_token() {
+    HTTPClient http;
+    String url = String("http://") + server_ip_str + ":" + server_port_num + "/signalk/v1/auth/login";
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    String body = String("{\"username\":\"") + sk_username + "\",\"password\":\"" + sk_password + "\"}";
+    int code = http.POST(body);
+    if (code == 200) {
+        String response = http.getString();
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, response);
+        sk_token = doc["token"].as<String>();
+        Serial.println("Signal K: token obtained: " + sk_token.substring(0,20) + "...");
+        http.end();
+        return true;
+    }
+    Serial.printf("Signal K: token fetch failed HTTP %d\n", code);
+    http.end();
+    return false;
+}
+
 
 static bool enqueue_outgoing(const String &msg) {
     if (ws_queue_mutex == NULL) return false;
@@ -129,6 +157,12 @@ void init_sensor_mutex() {
 
 // WebSocket event handler
 static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
+    if (type == WStype_DISCONNECTED) {
+        Serial.printf("Signal K: WS disconnected at %lums, length=%u\n", millis(), (unsigned)length);
+    }
+    if (type == WStype_ERROR) {
+        Serial.printf("Signal K: WS error, length=%u payload=%s\n", (unsigned)length, payload ? (char*)payload : "null");
+    }
     if (type == WStype_CONNECTED) {
         Serial.println("Signal K: WebSocket connected");
         last_message_time = millis();
@@ -157,6 +191,7 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
         last_message_time = millis();
         String msg = String((char*)payload, length);
         // Parse incoming JSON and look for updates->values
+        Serial.println("SK RAW: " + msg);  // ADD THIS LINE
         DynamicJsonDocument doc(4096);
         DeserializationError err = deserializeJson(doc, msg);
         if (err) return;
@@ -229,12 +264,12 @@ static void signalk_task(void *parameter) {
                 if (WiFi.status() != WL_CONNECTED) {
                     Serial.println("Signal K: WiFi not connected, skipping reconnect");
                     next_reconnect_at = now + 5000;
-                } else {
+             } else {
                     Serial.println("Signal K: attempting reconnect...");
                     ws_client.disconnect();
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream");
-                    ws_client.onEvent(wsEvent);
+                    fetch_signalk_token();
+                    { ws_client.setAuthorization((String("Bearer ") + sk_token).c_str()); ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream"); }                    ws_client.onEvent(wsEvent);
                     last_reconnect_attempt = now;
                     unsigned int jitter = (esp_random() & 0x7FF) % 1000;
                     next_reconnect_at = now + current_backoff_ms + jitter;
@@ -283,9 +318,19 @@ void enable_signalk(const char* ssid, const char* password, const char* server_i
         return;
     }
     Serial.println("Signal K: Starting WebSocket client...");
+    fetch_signalk_token();
+    // Test basic TCP connectivity
+    {
+        HTTPClient test_http;
+        String test_url = String("http://") + server_ip_str + ":" + server_port_num + "/signalk";
+        test_http.begin(test_url);
+        int test_code = test_http.GET();
+        Serial.printf("Signal K: HTTP connectivity test code: %d\n", test_code);
+        test_http.end();
+    }
 
     // Initialize websocket client
-    ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream");
+    { ws_client.setAuthorization((String("Bearer ") + sk_token).c_str()); ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream"); }
     ws_client.onEvent(wsEvent);
     // We'll manage reconnection with backoff ourselves
     ws_client.setReconnectInterval(0);

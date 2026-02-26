@@ -45,7 +45,7 @@
 #define LV_IMG_CACHE_DEF_SIZE 3     /* Cache current + adjacent screens */
 
 /* Enable logging to debug image loading issues */
-#define LV_USE_LOG 1
+#define LV_USE_LOG 0
 #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN  /* Show warnings and errors */
 #define LV_LOG_PRINTF 1  /* Use printf for logging */
 
